@@ -6,19 +6,22 @@
 #include <WiFi.h>
 #include <WebServer.h>
 
-const char* ssid = "*****";
-const char* password = "*****";
+const char* ssid = "*****"; // <-- UPDATE THIS
+const char* password = "*****";      // <-- UPDATE THIS
 
-#define PIN_LED_RED 25 // Alarm
+// --- PIN DEFINITIONS ---
+#define PIN_LED_RED   25 // Alarm
 #define PIN_LED_GREEN 26 // Setup/Calibration 
 #define PIN_LED_WHITE 27 // Heartbeat
-#define PIN_BUZZER 18 // Alarm
+#define PIN_BUZZER    18 // Alarm
 
+// --- CONFIGURATION ---
 #define SERIAL_BAUD_RATE 115200
+#define P_WAVE_THRESHOLD 0.30 // Sens
+#define ALARM_DURATION   3000 // Alarm stays ON for 3 secs
+#define COOLDOWN         1000 // Wait 1 second after alarm to prevent "feedback loop"
 
-#define P_WAVE_THRESHOLD 0.20 // Sens
-#define ALARM_DURATION 3000
-
+// --- OBJECTS ---
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345); // Create a sensor object with a unique ID(12345)
 WebServer server(80);
 
@@ -42,6 +45,7 @@ String getHTML() {
   
   // --- JAVASCRIPT SECTION ---
   // This script runs on your phone/browser. It asks the ESP32 for status every 500ms.
+  // Real-time AJAX Check
 
   html += "<script>";
   html += "setInterval(function() {";
@@ -112,7 +116,8 @@ void setup(){
     delay(500);
     Serial.print(".");
   }
-  Serial.println("Connected! IP Address: ");
+  Serial.println("\nWiFi Connected!");
+  Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
   // Starting Webserver
@@ -121,10 +126,11 @@ void setup(){
   server.begin();
 
   // Starting Calibration
-  for(int i = 0; i < 3; i++) {
+  for(int i = 0; i < 5; i++) {
     digitalWrite(PIN_LED_GREEN, HIGH); delay(200);
     digitalWrite(PIN_LED_GREEN, LOW); delay(200);
   }
+  Serial.println(">>> SYSTEM ARMED <<<");
 }
 
 void loop(){
@@ -147,33 +153,48 @@ void loop(){
     return; // Skip the rest of the loop once
   }
 
-  // Calculate DELTA (change)
-  // fabs() is float absolute value (turn negatives to positives)
-  float delta = fabs(currentMagnitude - previousMagnitude);
-  
+  // STATE EVALUATION
+  if(!isAlarmActive) {
+    // We are SAFE. Check for earthquakes. || Calculate DELTA (change)
+    float delta = fabs(currentMagnitude - previousMagnitude); //fabs() is float absolute value (turn negatives to positives)
 
-  // Earthquake Detection Logic
-  // if total force is grater than threshold it'a an event!
-  if(delta > P_WAVE_THRESHOLD) {
-    alarmOffTime = millis() + ALARM_DURATION;
-    isAlarmActive = true;
-    Serial.print("   >>> P-WAVE / VIBRATION DETECTED! <<<");
-  }
+    if(delta > P_WAVE_THRESHOLD) {
+      isAlarmActive = true;
+      alarmOffTime = millis() + ALARM_DURATION; // Set the deadline for alarm to turn off
+      Serial.println(">>> EARTHQUAKE DETECTED! ALARM ON <<<");
+    }
+  } else {
+    // We are in ALARM mode. Check if it's time to stop.
+    if ( millis() >= alarmOffTime) {
+      isAlarmActive = false; // Turn off the state
+      Serial.println("--- ALARM STOPPED. ENTERING COOLDOWN ---");
 
-  if(isAlarmActive) {
-    if( millis() < alarmOffTime) {
-      // TIME IS NOT UP YET -> KEEP ON
-      digitalWrite(PIN_LED_RED, HIGH);
-      digitalWrite(PIN_BUZZER, HIGH);
-    } else {
-      // TIME IS UP -> TURN OFF
-      isAlarmActive = false;
+      // Forve hardware OFF imm
       digitalWrite(PIN_LED_RED, LOW);
       digitalWrite(PIN_BUZZER, LOW);
-      Serial.println("--- Alarm Reset ---");
+
+      // COOLDOWN: Let the buzzer's physical vibration settle down
+      delay(COOLDOWN);
+
+      // Re-calibrate the baseline after the cooldown
+      accel.getEvent(&event);
+      currentMagnitude = sqrt(pow(event.acceleration.x, 2) + pow(event.acceleration.y, 2) + pow(event.acceleration.z, 2));
     }
   }
 
-  previousMagnitude = currentMagnitude; // Update Previous Reading for the Next Loop
-  delay(20); // Wait 500ms before the next read to make the text readable
+  // HARDWARE EXECUTION (Always enforce the current state)
+  if(isAlarmActive) {
+    digitalWrite(PIN_LED_RED, HIGH);
+    digitalWrite(PIN_BUZZER, HIGH);
+  } else {
+    digitalWrite(PIN_LED_RED, LOW);
+    digitalWrite(PIN_BUZZER, LOW);
+  }
+
+  // UPDATE BASELINE (Only when safe, never during alarm)
+  if(!isAlarmActive){
+    previousMagnitude = currentMagnitude;
+  }
+
+  delay(20);
 }
