@@ -16,10 +16,11 @@ const char* password = "*****";      // <-- UPDATE THIS
 #define PIN_BUZZER    18 // Alarm
 
 // --- CONFIGURATION ---
-#define SERIAL_BAUD_RATE 115200
-#define P_WAVE_THRESHOLD 0.30 // Sens
-#define ALARM_DURATION   3000 // Alarm stays ON for 3 secs
-#define COOLDOWN         1000 // Wait 1 second after alarm to prevent "feedback loop"
+#define SERIAL_BAUD_RATE   115200
+#define P_WAVE_THRESHOLD   0.30 // Sens
+#define ALARM_DURATION     3000 // Alarm stays ON for 3 secs
+#define COOLDOWN           1000 // Wait 1 second after alarm to prevent "feedback loop"
+#define HEARTBEAT_INTERVAL 5000 // 30 seconds for heartbeat
 
 // --- OBJECTS ---
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345); // Create a sensor object with a unique ID(12345)
@@ -31,6 +32,7 @@ bool firstReading = true; // Flag to handle the first reading
 
 bool isAlarmActive = false;
 unsigned long alarmOffTime = 0;
+unsigned long lastHeartbeatTime = 0; // Tracks the last heartbeat
 
 // Web page
 String getHTML() {
@@ -42,33 +44,58 @@ String getHTML() {
   html += "h1 { font-size: 50px; }";
   html += "#statusText { font-weight: bold; }";
   html += "</style>";
+
+  // --- JAVASCRIPT: GOOGLE MAPS & AJAX ---
+  html += "<script>";
+  html += "let map;";
+  html += "let stationMarker;";
+
+  // Initialize Google Maps
+  html += "function initMap() {";
+  html += "  const stationPos = { lat: 0, lng: 0 };"; // Default: ?
+  html += "  map = new google.maps.Map(document.getElementById('map'), {";
+  html += "    zoom: 12,";
+  html += "    center: stationPos,";
+  html += "    mapTypeId: 'terrain'";
+  html += "  });";
+  html += "  stationMarker = new google.maps.Marker({";
+  html += "    position: stationPos,";
+  html += "    map: map,";
+  html += "    title: 'Station 1 (Active)'";
+  html += "  });";
+  html += "}";
   
   // --- JAVASCRIPT SECTION ---
   // This script runs on your phone/browser. It asks the ESP32 for status every 500ms.
   // Real-time AJAX Check
 
-  html += "<script>";
   html += "setInterval(function() {";
   html += "  fetch('/status').then(response => response.text()).then(data => {";
   html += "    if (data == 'ALARM') {";
-  html += "      document.body.style.backgroundColor = 'red';";
+  html += "      document.body.style.backgroundColor = '#ffcccc';";
   html += "      document.getElementById('statusText').innerText = 'EARTHQUAKE!';";
-  html += "      document.getElementById('statusText').style.color = 'white';";
+  html += "      document.getElementById('statusText').style.color = 'red';";
+  // Future idea: We can make the map marker bounce or change color here!
   html += "    } else {";
-  html += "      document.body.style.backgroundColor = 'white';";
+  html += "      document.body.style.backgroundColor = '#f4f4f4';";
   html += "      document.getElementById('statusText').innerText = 'SAFE';";
   html += "      document.getElementById('statusText').style.color = 'green';";
   html += "    }";
   html += "  });";
-  html += "}, 500);"; // Check every 500 milliseconds
+  html += "}, 500);"; 
   html += "</script>";
+
+  // Load Google Maps API (Replace YOUR_GOOGLE_MAPS_API_KEY later)
+  html += "<script async defer src='https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&callback=initMap'></script>";
 
   html += "</head><body>";
   html += "<div class='container'>";
-  html += "<h2>SEISMIC MONITOR</h2>";
+  html += "<h2>SEISMIC NETWORK</h2>";
+  html += "<h3>Node: Station_1</h3>";
   html += "<hr>";
-  html += "<h1 id='statusText'>SAFE</h1>"; // This text changes via JavaScript
+  html += "<h1 id='statusText'>SAFE</h1>"; // This text changes
   html += "<p>System is monitoring P-Waves...</p>";
+  html += "<div id='map'></div>"; // Map container
   html += "</div></body></html>";
   return html;
 }
@@ -189,6 +216,15 @@ void loop(){
   } else {
     digitalWrite(PIN_LED_RED, LOW);
     digitalWrite(PIN_BUZZER, LOW);
+
+    // --- HEARTBEAT LOGIC (Only when SAFE) ---
+    if(millis() - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+      lastHeartbeatTime = millis();
+      digitalWrite(PIN_LED_WHITE, HIGH);
+      delay(50);
+      digitalWrite(PIN_LED_WHITE, LOW);
+      Serial.println("... System Heartbeat ...");
+    }
   }
 
   // UPDATE BASELINE (Only when safe, never during alarm)
