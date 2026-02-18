@@ -36,67 +36,72 @@ unsigned long lastHeartbeatTime = 0; // Tracks the last heartbeat
 
 // Web page
 String getHTML() {
-  String html = "<!DOCTYPE html><html><head>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>";
-  html += "body { font-family: sans-serif; text-align: center; margin-top: 50px; transition: background-color 0.5s; }";
-  html += ".container { padding: 20px; }";
-  html += "h1 { font-size: 50px; }";
-  html += "#statusText { font-weight: bold; }";
-  html += "</style>";
+  // R"rawliteral(...)rawliteral" is for optimized ESP32 memory
+  String html = R"rawliteral(
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <style>
+      body { font-family: sans-serif; text-align: center; margin-top: 20px; transition: background-color 0.5s; background-color: #f4f4f4;}
+      .container { background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 90%; max-width: 600px; margin: auto; }
+      h1 { font-size: 50px; margin: 10px 0; }
+      #statusText { font-weight: bold; }
+      /* Added a gray background to map div so we can see if it loads */
+      #map { height: 350px; width: 100%; margin-top: 20px; border-radius: 5px; background-color: #e0e0e0; border: 1px solid #ccc; } 
+    </style>
+    
+    // --- SCRIPT ---
+    <script>
+      let map;
+      let stationMarker;
+      
+      function initMap() {
+        const stationPos = { lat: 40.1553, lng: 26.4082 }; // Default: Çanakkale
+        map = new google.maps.Map(document.getElementById('map'), {
+          zoom: 12,
+          center: stationPos,
+          mapTypeId: 'terrain'
+        });
+        stationMarker = new google.maps.Marker({
+          position: stationPos,
+          map: map,
+          title: 'Station 1 (Active)'
+        });
+      }
 
-  // --- JAVASCRIPT: GOOGLE MAPS & AJAX ---
-  html += "<script>";
-  html += "let map;";
-  html += "let stationMarker;";
-
-  // Initialize Google Maps
-  html += "function initMap() {";
-  html += "  const stationPos = { lat: 0, lng: 0 };"; // Default: ?
-  html += "  map = new google.maps.Map(document.getElementById('map'), {";
-  html += "    zoom: 12,";
-  html += "    center: stationPos,";
-  html += "    mapTypeId: 'terrain'";
-  html += "  });";
-  html += "  stationMarker = new google.maps.Marker({";
-  html += "    position: stationPos,";
-  html += "    map: map,";
-  html += "    title: 'Station 1 (Active)'";
-  html += "  });";
-  html += "}";
-  
-  // --- JAVASCRIPT SECTION ---
-  // This script runs on your phone/browser. It asks the ESP32 for status every 500ms.
-  // Real-time AJAX Check
-
-  html += "setInterval(function() {";
-  html += "  fetch('/status').then(response => response.text()).then(data => {";
-  html += "    if (data == 'ALARM') {";
-  html += "      document.body.style.backgroundColor = '#ffcccc';";
-  html += "      document.getElementById('statusText').innerText = 'EARTHQUAKE!';";
-  html += "      document.getElementById('statusText').style.color = 'red';";
-  // Future idea: We can make the map marker bounce or change color here!
-  html += "    } else {";
-  html += "      document.body.style.backgroundColor = '#f4f4f4';";
-  html += "      document.getElementById('statusText').innerText = 'SAFE';";
-  html += "      document.getElementById('statusText').style.color = 'green';";
-  html += "    }";
-  html += "  });";
-  html += "}, 500);"; 
-  html += "</script>";
-
-  // Load Google Maps API (Replace YOUR_GOOGLE_MAPS_API_KEY later)
-  html += "<script async defer src='https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&callback=initMap'></script>";
-
-  html += "</head><body>";
-  html += "<div class='container'>";
-  html += "<h2>SEISMIC NETWORK</h2>";
-  html += "<h3>Node: Station_1</h3>";
-  html += "<hr>";
-  html += "<h1 id='statusText'>SAFE</h1>"; // This text changes
-  html += "<p>System is monitoring P-Waves...</p>";
-  html += "<div id='map'></div>"; // Map container
-  html += "</div></body></html>";
+      setInterval(function() {
+        fetch('/status').then(response => response.text()).then(data => {
+          if (data == 'ALARM') {
+            document.body.style.backgroundColor = '#d70a0a';
+            document.getElementById('statusText').innerText = 'EARTHQUAKE!';
+            document.getElementById('statusText').style.color = 'red';
+          } else {
+            document.body.style.backgroundColor = '#f4f4f4';
+            document.getElementById('statusText').innerText = 'SAFE';
+            document.getElementById('statusText').style.color = 'green';
+          }
+        });
+      }, 500);
+    </script>
+    
+    // Load Google Maps API (Replace YOUR_GOOGLE_MAPS_API_KEY later)
+    <script async defer src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&callback=initMap"></script>
+  </head>
+  <body>
+    <div class='container'>
+      <h2>SEISMIC NETWORK</h2>
+      <h3>Node: Station_1</h3>
+      <hr>
+      <h1 id='statusText'>SAFE</h1>
+      <p>System is monitoring P-Waves...</p>
+      <div id='map'>
+        <p style="padding-top: 150px; color: #666;">Loading Map...</p>
+      </div>
+    </div>
+  </body>
+  </html>
+    )rawliteral";
   return html;
 }
 
