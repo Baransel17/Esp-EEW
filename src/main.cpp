@@ -38,70 +38,80 @@ unsigned long lastHeartbeatTime = 0; // Tracks the last heartbeat
 String getHTML() {
   // R"rawliteral(...)rawliteral" is for optimized ESP32 memory
   String html = R"rawliteral(
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
-    <style>
-      body { font-family: sans-serif; text-align: center; margin-top: 20px; transition: background-color 0.5s; background-color: #f4f4f4;}
-      .container { background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 90%; max-width: 600px; margin: auto; }
-      h1 { font-size: 50px; margin: 10px 0; }
-      #statusText { font-weight: bold; }
-      /* Added a gray background to map div so we can see if it loads */
-      #map { height: 350px; width: 100%; margin-top: 20px; border-radius: 5px; background-color: #e0e0e0; border: 1px solid #ccc; } 
-    </style>
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 20px; transition: background-color 0.5s; background-color: #f4f4f4;}
+    .container { background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 90%; max-width: 600px; margin: auto; }
+    h1 { font-size: 50px; margin: 10px 0; }
+    #statusText { font-weight: bold; }
+    #map { height: 350px; width: 100%; margin-top: 20px; border-radius: 5px; background-color: #e0e0e0; border: 1px solid #ccc; } 
+  </style>
+  
+  <script>
+    let map;
+    let stationMarker;
     
-    // --- SCRIPT ---
-    <script>
-      let map;
-      let stationMarker;
-      
-      function initMap() {
-        const stationPos = { lat: 40.1553, lng: 26.4082 }; // Default: Çanakkale
-        map = new google.maps.Map(document.getElementById('map'), {
-          zoom: 12,
-          center: stationPos,
-          mapTypeId: 'terrain'
-        });
-        stationMarker = new google.maps.Marker({
-          position: stationPos,
-          map: map,
-          title: 'Station 1 (Active)'
-        });
-      }
+    function initMap() {
+      const stationPos = { lat: 40.1553, lng: 26.4082 }; // Default: Çanakkale / Turkey
+      map = new google.maps.Map(document.getElementById('map'), {
+        zoom: 12,
+        center: stationPos,
+        mapTypeId: 'terrain'
+      });
+      stationMarker = new google.maps.Marker({
+        position: stationPos,
+        map: map,
+        title: 'Station 1 (Active)'
+      });
+    }
 
-      setInterval(function() {
-        fetch('/status').then(response => response.text()).then(data => {
-          if (data == 'ALARM') {
-            document.body.style.backgroundColor = '#d70a0a';
-            document.getElementById('statusText').innerText = 'EARTHQUAKE!';
-            document.getElementById('statusText').style.color = 'red';
-          } else {
-            document.body.style.backgroundColor = '#f4f4f4';
-            document.getElementById('statusText').innerText = 'SAFE';
-            document.getElementById('statusText').style.color = 'green';
+    setInterval(function() {
+      fetch('/status').then(response => response.text()).then(data => {
+        if (data == 'ALARM') {
+          // Earthquake state colors
+          document.body.style.backgroundColor = '#ffcccc';
+          document.getElementById('statusText').innerText = 'EARTHQUAKE!';
+          document.getElementById('statusText').style.color = 'red';
+          
+          // Animation: Start bouncing if not bouncing
+          if (stationMarker && stationMarker.getAnimation() == null) {
+            stationMarker.setAnimation(google.maps.Animation.BOUNCE);
           }
-        });
-      }, 500);
-    </script>
-    
-    // Load Google Maps API (Replace YOUR_GOOGLE_MAPS_API_KEY later)
-    <script async defer src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&callback=initMap"></script>
-  </head>
-  <body>
-    <div class='container'>
-      <h2>SEISMIC NETWORK</h2>
-      <h3>Node: Station_1</h3>
-      <hr>
-      <h1 id='statusText'>SAFE</h1>
-      <p>System is monitoring P-Waves...</p>
-      <div id='map'>
-        <p style="padding-top: 150px; color: #666;">Loading Map...</p>
-      </div>
+        } else {
+          // Safe state colors
+          document.body.style.backgroundColor = '#f4f4f4';
+          document.getElementById('statusText').innerText = 'SAFE';
+          document.getElementById('statusText').style.color = 'green';
+          
+          // Animation: Stop bouncing
+          if (stationMarker && stationMarker.getAnimation() != null) {
+            stationMarker.setAnimation(null);
+          }
+        }
+      });
+    }, 500);
+  </script>
+  <!-- Load Google Maps API (Replace YOUR_GOOGLE_MAPS_API_KEY later) -->      
+  <script async defer src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&callback=initMap"></script>
+</head>
+<body>
+  <div class='container'>
+    <h2>SEISMIC NETWORK</h2>
+    <h3>Node: Station_1</h3>
+    <hr>
+    <h1 id='statusText'>SAFE</h1>
+    <p>System is monitoring P-Waves...</p>
+    <div id='map'>
+      <p style="padding-top: 150px; color: #666;">Loading Map...</p>
     </div>
-  </body>
-  </html>
-    )rawliteral";
+  </div>
+</body>
+</html>
+  )rawliteral";
+  
   return html;
 }
 
