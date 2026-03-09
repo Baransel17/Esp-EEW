@@ -5,9 +5,13 @@
 #include <math.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <PubSubClient.h>
 
-const char* ssid = "*****"; // <-- UPDATE THIS
-const char* password = "*****";      // <-- UPDATE THIS
+// --- USER CONFIGURATIONS --- 
+const char* ssid = "*****";                                   // <-- UPDATE THIS
+const char* password = "*****";                               // <-- UPDATE THIS
+const char* mqtt_server = "*****";                            // <-- Local IP Address
+const char* mqtt_topic = "seismic_network/station_1/status";  // MQTT Topic
 
 // --- PIN DEFINITIONS ---
 #define PIN_LED_RED   25 // Alarm
@@ -20,19 +24,22 @@ const char* password = "*****";      // <-- UPDATE THIS
 #define P_WAVE_THRESHOLD   0.30 // Sens
 #define ALARM_DURATION     3000 // Alarm stays ON for 3 secs
 #define COOLDOWN           1000 // Wait 1 second after alarm to prevent "feedback loop"
-#define HEARTBEAT_INTERVAL 5000 // 30 seconds for heartbeat
+#define HEARTBEAT_INTERVAL 5000 // 5 seconds for heartbeat
 
 // --- OBJECTS ---
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345); // Create a sensor object with a unique ID(12345)
 WebServer server(80);
+WiFiClient espClient;               //  WiFi Client for MQTT
+PubSubClient mqttClient(espClient); //  MQTT Client
 
-// Global variable to store the previous reading
+// --- GLOBAL VARIABLES ---
 float previousMagnitude = 0;
 bool firstReading = true; // Flag to handle the first reading
 
 bool isAlarmActive = false;
 unsigned long alarmOffTime = 0;
-unsigned long lastHeartbeatTime = 0; // Tracks the last heartbeat
+unsigned long lastHeartbeatTime = 0;        //  Tracks the last heartbeat
+unsigned long lastMqttReconnectAttempt = 0; //  For non-blocking reconnect
 
 // Web page
 String getHTML() {
@@ -128,6 +135,26 @@ void handleRoot(){
   server.send(200, "text/html", getHTML());
 }
 
+// --- Non-Blocking MQTT Reconnect Function ---
+void checkMqttConnection() {
+  if(!mqttClient.connected()) {
+    unsigned long now = millis();
+    //  Try to reconnect every 5 seconds without blocking the sensor loop
+    if(now - lastMqttReconnectAttempt > 5000){
+      lastMqttReconnectAttempt = now;
+      Serial.print("[MQTT] Attempting connection...");
+      if(mqttClient.connect("ESP32_Station_1")) {
+        Serial.println(" CONNECTED!");
+        mqttClient.publish(mqtt_topic, "SYSTEM_ONLINE");
+      } else {
+        Serial.println(" FAILED.");
+      }
+    }
+  } else {
+    mqttClient.loop();  //  Keep the connection alive
+  }
+}
+
 void setup(){
   Serial.begin(SERIAL_BAUD_RATE); // Initialize Serial comm
 
@@ -162,12 +189,15 @@ void setup(){
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
-  // Starting Webserver
+  //  --- Setup MQTT Server
+  mqttClient.setServer(mqtt_server, 1883);
+
+  //  Starting Webserver
   server.on("/", handleRoot); // Load the page
   server.on("/status", handleStatus); // Check status
   server.begin();
 
-  // Starting Calibration
+  //  Starting Calibration
   for(int i = 0; i < 5; i++) {
     digitalWrite(PIN_LED_GREEN, HIGH); delay(200);
     digitalWrite(PIN_LED_GREEN, LOW); delay(200);
@@ -177,9 +207,10 @@ void setup(){
 
 void loop(){
 
-  server.handleClient(); // Handle Requests
+  server.handleClient();  //  Handle Requests
+  checkMqttConnection();  //  Keep MQTT alive without blocking
 
-  // Get a new sensor event
+  //  Get a new sensor event
   sensors_event_t event;
   accel.getEvent(&event);
 
@@ -197,19 +228,29 @@ void loop(){
 
   // STATE EVALUATION
   if(!isAlarmActive) {
-    // We are SAFE. Check for earthquakes. || Calculate DELTA (change)
-    float delta = fabs(currentMagnitude - previousMagnitude); //fabs() is float absolute value (turn negatives to positives)
+    //  We are SAFE. Check for earthquakes. || Calculate DELTA (change)
+    float delta = fabs(currentMagnitude - previousMagnitude); //  fabs() is float absolute value (turn negatives to positives)
 
     if(delta > P_WAVE_THRESHOLD) {
       isAlarmActive = true;
-      alarmOffTime = millis() + ALARM_DURATION; // Set the deadline for alarm to turn off
+      alarmOffTime = millis() + ALARM_DURATION; //  Set the deadline for alarm to turn off
       Serial.println(">>> EARTHQUAKE DETECTED! ALARM ON <<<");
+
+      //  --- Publish ALARM to Node.js
+      if(mqttClient.connected()) {
+        mqttClient.publish(mqtt_topic, "EARTHQUAKE_ALARM");
+      }
     }
   } else {
-    // We are in ALARM mode. Check if it's time to stop.
+    //  We are in ALARM mode. Check if it's time to stop.
     if ( millis() >= alarmOffTime) {
       isAlarmActive = false; // Turn off the state
       Serial.println("--- ALARM STOPPED. ENTERING COOLDOWN ---");
+
+      //  --- Publish SAFE back to Node.js
+      if(mqttClient.connected()) {
+        mqttClient.publish(mqtt_topic, "SAFE");
+      }
 
       // Forve hardware OFF imm
       digitalWrite(PIN_LED_RED, LOW);
@@ -239,6 +280,11 @@ void loop(){
       delay(50);
       digitalWrite(PIN_LED_WHITE, LOW);
       Serial.println("... System Heartbeat ...");
+
+      //  Publish Heartbeat to Node.js
+      if(mqttClient.connected()){
+        mqttClient.publish(mqtt_topic, "HEARTBEAT");
+      }
     }
   }
 
