@@ -6,6 +6,8 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <PubSubClient.h>
+#include <TinyGPSPlus.h>
+#include <HardwareSerial.h> //  For ESP32 Hardware UART
 
 // --- USER CONFIGURATIONS --- 
 const char* ssid = "*****";                                   // <-- UPDATE THIS
@@ -13,13 +15,18 @@ const char* password = "*****";                               // <-- UPDATE THIS
 const char* mqtt_server = "*****";                            // <-- Local IP Address
 const char* mqtt_topic = "seismic_network/station_1/status";  // MQTT Topic
 
-// --- PIN DEFINITIONS ---
+//  --- PIN DEFINITIONS ---
 #define PIN_LED_RED   25 // Alarm
 #define PIN_LED_GREEN 26 // Setup/Calibration 
 #define PIN_LED_WHITE 27 // Heartbeat
 #define PIN_BUZZER    18 // Alarm
 
-// --- CONFIGURATION ---
+//  --- GPS PIN DEFINITIONS
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
+#define GPS_BAUD_RATE 9600
+
+//  --- CONFIGURATION ---
 #define SERIAL_BAUD_RATE   115200
 #define P_WAVE_THRESHOLD   0.30 // Sens
 #define ALARM_DURATION     3000 // Alarm stays ON for 3 secs
@@ -31,6 +38,8 @@ Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345); // Create a se
 WebServer server(80);
 WiFiClient espClient;               //  WiFi Client for MQTT
 PubSubClient mqttClient(espClient); //  MQTT Client
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2);  //  Using UART2 for GPS communication
 
 // --- GLOBAL VARIABLES ---
 float previousMagnitude = 0;
@@ -40,6 +49,17 @@ bool isAlarmActive = false;
 unsigned long alarmOffTime = 0;
 unsigned long lastHeartbeatTime = 0;        //  Tracks the last heartbeat
 unsigned long lastMqttReconnectAttempt = 0; //  For non-blocking reconnect
+
+//  Variables to store the latest valid GPS coordinates
+double currentLat = 0.0;
+double currentLng = 0.0;
+
+// --- HELPER FUNCTION: CREATE MQTT PAYLOAD ---
+// Combines status and GPS data -> Format: "STATUS|LAT,LNG"
+String  createPayload(String statusMessage) {
+  String payload = statusMessage + "|" + String(currentLat, 6) + "," + String(currentLng, 6);
+  return payload;
+}
 
 // Web page
 String getHTML() {
@@ -145,7 +165,8 @@ void checkMqttConnection() {
       Serial.print("[MQTT] Attempting connection...");
       if(mqttClient.connect("ESP32_Station_1")) {
         Serial.println(" CONNECTED!");
-        mqttClient.publish(mqtt_topic, "SYSTEM_ONLINE");
+        //  Send initial online status with coordinates
+        mqttClient.publish(mqtt_topic, createPayload("SYSTEM_ONLINE").c_str());
       } else {
         Serial.println(" FAILED.");
       }
@@ -157,6 +178,10 @@ void checkMqttConnection() {
 
 void setup(){
   Serial.begin(SERIAL_BAUD_RATE); // Initialize Serial comm
+
+  //  Initialize GPS Serial Communication
+  gpsSerial.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  Serial.println("GPS Serial Initialized");
 
   // Pin configurations
   pinMode(PIN_LED_RED, OUTPUT);
@@ -210,11 +235,22 @@ void loop(){
   server.handleClient();  //  Handle Requests
   checkMqttConnection();  //  Keep MQTT alive without blocking
 
+  //  Read incoming GPS data without blocking the loop
+  while(gpsSerial.available() > 0) {
+    if(gps.encode(gpsSerial.read())){
+      //  If a valid location is found, update the global variables
+      if(gps.location.isValid()) {
+        currentLat = gps.location.lat();
+        currentLng = gps.location.lng();
+      }
+    }
+  }
+
   //  Get a new sensor event
   sensors_event_t event;
   accel.getEvent(&event);
 
-  // Extract Axis Data
+  //  Extract Axis Data
   float x = event.acceleration.x;
   float y = event.acceleration.y;
   float z = event.acceleration.z;
@@ -236,9 +272,9 @@ void loop(){
       alarmOffTime = millis() + ALARM_DURATION; //  Set the deadline for alarm to turn off
       Serial.println(">>> EARTHQUAKE DETECTED! ALARM ON <<<");
 
-      //  --- Publish ALARM to Node.js
+      //  --- Publish ALARM with GPS coordinates
       if(mqttClient.connected()) {
-        mqttClient.publish(mqtt_topic, "EARTHQUAKE_ALARM");
+        mqttClient.publish(mqtt_topic, createPayload("EARTHQUAKE_ALARM").c_str());
       }
     }
   } else {
@@ -247,9 +283,9 @@ void loop(){
       isAlarmActive = false; // Turn off the state
       Serial.println("--- ALARM STOPPED. ENTERING COOLDOWN ---");
 
-      //  --- Publish SAFE back to Node.js
+      //  --- Publish SAFE with GPS coordinates
       if(mqttClient.connected()) {
-        mqttClient.publish(mqtt_topic, "SAFE");
+        mqttClient.publish(mqtt_topic, createPayload("SAFE").c_str());
       }
 
       // Forve hardware OFF imm
@@ -279,11 +315,17 @@ void loop(){
       digitalWrite(PIN_LED_WHITE, HIGH);
       delay(50);
       digitalWrite(PIN_LED_WHITE, LOW);
-      Serial.println("... System Heartbeat ...");
+      
+      //  Print GPS status to Serial Monitor for debugging
+      Serial.print("... System Heartbeat ... [Lat: ");
+      Serial.print(currentLat, 6);
+      Serial.print(", Lng: ");
+      Serial.print(currentLng, 6);
+      Serial.println("]");
 
-      //  Publish Heartbeat to Node.js
+      //  Publish Heartbeat with GPS coordinates
       if(mqttClient.connected()){
-        mqttClient.publish(mqtt_topic, "HEARTBEAT");
+        mqttClient.publish(mqtt_topic, createPayload("HEARTBEAT").c_str());
       }
     }
   }
