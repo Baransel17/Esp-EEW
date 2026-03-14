@@ -8,10 +8,9 @@
 #include <PubSubClient.h>
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h> //  For ESP32 Hardware UART
+#include <WiFiManager.h>  //  For connect to WiFi easly
 
 //  --- USER CONFIGURATIONS --- 
-const char* ssid = "*****";                                   // <-- UPDATE THIS
-const char* password = "*****";                               // <-- UPDATE THIS
 const char* mqtt_server = "*****";                            // <-- Local IP Address
 const char* mqtt_topic = "seismic_network/station_1/status";  // MQTT Topic
 
@@ -37,7 +36,7 @@ const char* mqtt_topic = "seismic_network/station_1/status";  // MQTT Topic
 #define LTA_WINDOW_SIZE 500 //  Long-Time Average Window (~10 seconds at 50Hz)
 #define STA_LTA_THRESHOLD 2.5 //  Trigger alarm if STA is 4x larger than LTA
 
-// --- OBJECTS ---
+//  --- OBJECTS ---
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345); //  Create a sensor object with a unique ID(12345)
 WebServer server(80);
 WiFiClient espClient;               //  WiFi Client for MQTT
@@ -239,14 +238,18 @@ void setup(){
   for(int i = 0; i < STA_WINDOW_SIZE; i++) staBuffer[i] = 0;
   for(int i = 0; i < LTA_WINDOW_SIZE; i++) ltaBuffer[i] = 0;
 
-  //  Wifi Start
-  Serial.print("Connecting Wifi...");
-  Serial.print(ssid);
-  WiFi.begin(ssid, password);
-  while(WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  //  --- Starting WiFiManager ---
+  Serial.println("Starting WiFiManager...");
+  digitalWrite(PIN_LED_GREEN, HIGH);  // Setup mode for WiFi connection
+
+  WiFiManager wifiManager;
+
+  if(!wifiManager.autoConnect("Seismic_Node_Setup")) {
+    Serial.println("Failed to connect and hit timeout. Restarting...");
+    delay(3000);
+    ESP.restart();  // If failed to connect restart esp
   }
+
   Serial.println("\nWiFi Connected!");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
