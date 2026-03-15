@@ -9,10 +9,14 @@
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h> //  For ESP32 Hardware UART
 #include <WiFiManager.h>  //  For connect to WiFi easly
+#include <WiFiClientSecure.h> //  For cloud security (HiveMQ Cloud TLS/SSL)
 
 //  --- USER CONFIGURATIONS --- 
-const char* mqtt_server = "*****";                            // <-- Local IP Address
-const char* mqtt_topic = "seismic_network/station_1/status";  // MQTT Topic
+const char* mqtt_server = "*****.hivemq.cloud";  //  <-- UPDATE THIS
+const char* mqtt_user = "seismic_node"; //  <-- UPDATE THIS
+const char* mqtt_pass = "*****"; //  <-- UPDATE THIS
+const char* mqtt_topic = "seismic_network/station_1/status";
+const int mqtt_port = 8883;
 
 //  --- PIN DEFINITIONS ---
 #define PIN_LED_RED   25 // Alarm
@@ -39,8 +43,11 @@ const char* mqtt_topic = "seismic_network/station_1/status";  // MQTT Topic
 //  --- OBJECTS ---
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345); //  Create a sensor object with a unique ID(12345)
 WebServer server(80);
-WiFiClient espClient;               //  WiFi Client for MQTT
+
+// WiFiClient espClient;
+WiFiClientSecure espClient; //  Secure client for Cloud
 PubSubClient mqttClient(espClient); //  MQTT Client
+
 TinyGPSPlus gps;
 HardwareSerial gpsSerial(2);  //  Using UART2 for GPS communication
 
@@ -194,13 +201,17 @@ void checkMqttConnection() {
     //  Try to reconnect every 5 seconds without blocking the sensor loop
     if(now - lastMqttReconnectAttempt > 5000){
       lastMqttReconnectAttempt = now;
-      Serial.print("[MQTT] Attempting connection...");
-      if(mqttClient.connect("ESP32_Station_1")) {
-        Serial.println(" CONNECTED!");
+      Serial.print("[MQTT] Attempting cloud connection...");
+
+      //  Connect with Username and Password
+      if(mqttClient.connect("ESP32_Station_1", mqtt_user, mqtt_pass)) {
+        Serial.println(" CONNECTED TO CLOUD!");
         //  Send initial online status with coordinates
         mqttClient.publish(mqtt_topic, createPayload("SYSTEM_ONLINE").c_str());
       } else {
-        Serial.println(" FAILED.");
+        Serial.println(" FAILED, rc=");
+        Serial.print(mqttClient.state());
+        Serial.println(" try again in 5 seconds.");
       }
     }
   } else {
@@ -254,8 +265,9 @@ void setup(){
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
-  //  --- Setup MQTT Server
-  mqttClient.setServer(mqtt_server, 1883);
+  //  --- CLOUD MQTT SECURITY SETUP ---
+  espClient.setInsecure();  //  Bypass SSL certificate validation for development
+  mqttClient.setServer(mqtt_server, mqtt_port);
 
   //  Webserver Routes
   server.on("/", handleRoot); // Load the page
