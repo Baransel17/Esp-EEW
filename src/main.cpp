@@ -12,8 +12,8 @@
 #include <WiFiClientSecure.h> //  For cloud security (HiveMQ Cloud TLS/SSL)
 
 //  --- USER CONFIGURATIONS --- 
-const char* mqtt_server = "*****.hivemq.cloud";  //  <-- UPDATE THIS
-const char* mqtt_user = "seismic_node"; //  <-- UPDATE THIS
+const char* mqtt_server = "*****.cloud";  //  <-- UPDATE THIS
+const char* mqtt_user = "*****"; //  <-- UPDATE THIS
 const char* mqtt_pass = "*****"; //  <-- UPDATE THIS
 const char* mqtt_topic = "seismic_network/station_1/status";
 const int mqtt_port = 8883;
@@ -75,8 +75,11 @@ int sampleCount = 0;  //  Tracks initial buffer fill
 
 //  --- HELPER FUNCTION: CREATE MQTT PAYLOAD ---
 //  Combines status and GPS data -> Format: "STATUS|LAT,LNG"
-String  createPayload(String statusMessage) {
-  String payload = statusMessage + "|" + String(currentLat, 6) + "," + String(currentLng, 6);
+String  createPayload(String statusMessage, float intensity = 0.0) {
+  char intensityStr[10];
+  dtostrf(intensity, 1, 3, intensityStr);
+
+  String payload = statusMessage + "|" + String(currentLat, 6) + "," + String(currentLng, 6) + "|" + String(intensityStr);
   return payload;
 }
 
@@ -207,7 +210,7 @@ void checkMqttConnection() {
       if(mqttClient.connect("ESP32_Station_1", mqtt_user, mqtt_pass)) {
         Serial.println(" CONNECTED TO CLOUD!");
         //  Send initial online status with coordinates
-        mqttClient.publish(mqtt_topic, createPayload("SYSTEM_ONLINE").c_str());
+        mqttClient.publish(mqtt_topic, createPayload("SYSTEM_ONLINE", 0.0).c_str());
       } else {
         Serial.println(" FAILED, rc=");
         Serial.print(mqttClient.state());
@@ -353,7 +356,7 @@ void loop(){
       Serial.println(" ALARM ON <<<");
 
       if(mqttClient.connected()) {
-        mqttClient.publish(mqtt_topic, createPayload("EARTHQUAKE_ALARM").c_str());
+        mqttClient.publish(mqtt_topic, createPayload("EARTHQUAKE_ALARM", ratio).c_str());
       }
     }
   } else {
@@ -363,7 +366,7 @@ void loop(){
       Serial.println("--- ALARM STOPPED. ENTERING COOLDOWN ---");
 
       if(mqttClient.connected()) {
-        mqttClient.publish(mqtt_topic, createPayload("SAFE").c_str());
+        mqttClient.publish(mqtt_topic, createPayload("SAFE", 0.0).c_str());
       }
 
       digitalWrite(PIN_LED_RED, LOW);
@@ -412,7 +415,7 @@ void loop(){
 
       //  Publish Heartbeat with GPS coordinates
       if(mqttClient.connected()){
-        mqttClient.publish(mqtt_topic, createPayload("HEARTBEAT").c_str());
+        mqttClient.publish(mqtt_topic, createPayload("HEARTBEAT", 0.0).c_str());
       }
     }
   }
