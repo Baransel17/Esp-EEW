@@ -34,6 +34,7 @@ const int mqtt_port = 8883;
 #define ALARM_DURATION     3000 //  Alarm stays ON for 3 secs
 #define COOLDOWN           1000 //  Wait 1 second after alarm to prevent "feedback loop"
 #define HEARTBEAT_INTERVAL 5000 //  5 seconds for heartbeat
+#define DISPLACEMENT_THRESHOLD 4.0  //  Shift in m/s^2 (~0.4g) to consider the device fallen/displaced
 
 //  --- STA/LTA ALGORITHM CONFIGURATION ---
 #define STA_WINDOW_SIZE 50  //  Short-Time Average Window (~1 second at 50Hz)
@@ -63,6 +64,11 @@ unsigned long lastMqttReconnectAttempt = 0; //  For non-blocking reconnect
 //  Variables to store the latest valid GPS coordinates
 double currentLat = 0.0;
 double currentLng = 0.0;
+
+// --- CALIBRATION & DISPLACEMENT VARIABLES ---
+float calibX = 0.0, calibY = 0.0, calibZ = 0.0;
+bool isDeviceDisplaced = false;
+int displacementCounter = 0;  // To prevent false triggers during heavy vibration
 
 //  --- STA/LTA VARIABLES ---
 float staBuffer[STA_WINDOW_SIZE];
@@ -278,7 +284,29 @@ void setup(){
   server.on("/gps", handleGPS); //  Route for fetching GPS coordinates
   server.begin();
 
-  //  Starting Calibration
+  //  --- NEW: GRAVITY CALIBRATION PHASE ---
+  Serial.print("--- Starting Gravity Calibration (Do not move device) ---");
+  for(int i = 0; i < 50; i++) {
+    sensors_event_t event;
+    accel.getEvent(&event);
+    calibX += event.acceleration.x;
+    calibY += event.acceleration.y;
+    calibZ += event.acceleration.z;
+
+    //  Blink Green LED during calibration
+    digitalWrite(PIN_LED_GREEN, i % 2 == 0 ? HIGH : LOW);
+    delay(100);
+  }
+  calibX /= 50.0;
+  calibY /= 50.0;
+  calibZ /= 50.0;
+
+  digitalWrite(PIN_LED_GREEN, LOW);
+  Serial.print("Calibrated Base Vector -> X: "); Serial.print(calibX);
+  Serial.print(" Y: "); Serial.print(calibY);
+  Serial.print(" Z: "); Serial.println(calibZ);
+
+  //  Starting Sequence
   for(int i = 0; i < 5; i++) {
     digitalWrite(PIN_LED_GREEN, HIGH); delay(200);
     digitalWrite(PIN_LED_GREEN, LOW); delay(200);
@@ -305,6 +333,41 @@ void loop(){
   //  Get a new sensor event
   sensors_event_t event;
   accel.getEvent(&event);
+
+  //  --- NEW: DISPLACEMENT / FALL DETECTION ---
+  if(!isDeviceDisplaced) {
+    float deltaX = fabs(event.acceleration.x - calibX);
+    float deltaY = fabs(event.acceleration.y - calibY);
+    float deltaZ = fabs(event.acceleration.z - calibZ);
+
+    //  If any axis deviates significantly from the initial 1g resting position
+    if(deltaX > DISPLACEMENT_THRESHOLD || deltaY > DISPLACEMENT_THRESHOLD || deltaZ > DISPLACEMENT_THRESHOLD) {
+      displacementCounter++;
+      //  Require 20 consecutive readings (~400ms) to confirm it's a fall, not a seismic wave
+      if(displacementCounter > 20) {
+        isDeviceDisplaced = true;
+        Serial.println(">>> FATAL: DEVICE DISPLACED OR FALLEN! <<<");
+        if(mqttClient.connected()) {
+          mqttClient.publish(mqtt_topic, createPayload("DEVICE_DISPLACED", 0.0).c_str());
+        }
+      }
+    } else {
+      displacementCounter = 0;  // Reset if it returns to normal position
+    }
+  }
+
+  //  If the device has fallen, lock it in alarm state until hardware reset
+  if(isDeviceDisplaced) {
+    digitalWrite(PIN_LED_RED, HIGH);
+
+    //  Beep SOS or continuous warning
+    if(millis() % 1000 < 500) {
+      digitalWrite(PIN_BUZZER, HIGH);
+    } else {
+      digitalWrite(PIN_BUZZER, LOW);
+    }
+    return; //  SKIP SEISMIC DETECTION, device is compromised!
+  }
 
   //  Extract Axis Data
   float x = event.acceleration.x;
