@@ -10,9 +10,10 @@
 #include <HardwareSerial.h> //  For ESP32 Hardware UART
 #include <WiFiManager.h>  //  For connect to WiFi easly
 #include <WiFiClientSecure.h> //  For cloud security (HiveMQ Cloud TLS/SSL)
+#include <ArduinoOTA.h> // For OTA (Over The Air)
 
 //  --- USER CONFIGURATIONS --- 
-const char* mqtt_server = "*****.cloud";  //  <-- UPDATE THIS
+const char* mqtt_server = "******.cloud";  //  <-- UPDATE THIS
 const char* mqtt_user = "*****"; //  <-- UPDATE THIS
 const char* mqtt_pass = "*****"; //  <-- UPDATE THIS
 const char* mqtt_topic = "seismic_network/station_1/status";
@@ -260,19 +261,47 @@ void setup(){
 
   //  --- Starting WiFiManager ---
   Serial.println("Starting WiFiManager...");
-  digitalWrite(PIN_LED_GREEN, HIGH);  // Setup mode for WiFi connection
+  digitalWrite(PIN_LED_GREEN, HIGH);  //  Setup mode for WiFi connection
 
   WiFiManager wifiManager;
 
   if(!wifiManager.autoConnect("Seismic_Node_Setup")) {
     Serial.println("Failed to connect and hit timeout. Restarting...");
     delay(3000);
-    ESP.restart();  // If failed to connect restart esp
+    ESP.restart();  //  If failed to connect restart esp
   }
 
   Serial.println("\nWiFi Connected!");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
+
+  //  --- OTA CONFIGURATION ---
+  ArduinoOTA.setHostname("Seismic_Station_1");  //  Hostname for the network
+  ArduinoOTA.setPassword("*****"); //  Password for OTA uploads
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("[OTA] Update Started...");
+    //  Turn off alarm during update
+    digitalWrite(PIN_LED_RED, LOW);
+    digitalWrite(PIN_BUZZER, LOW);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\n[OTA] Update Finished! Rebooting...");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[OTA] Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed.");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed.");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed.");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed.");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed.");
+  });
+
+  ArduinoOTA.begin();
+  Serial.println("[OTA] Over-The-Air Update Ready!");
 
   //  --- CLOUD MQTT SECURITY SETUP ---
   espClient.setInsecure();  //  Bypass SSL certificate validation for development
@@ -284,7 +313,7 @@ void setup(){
   server.on("/gps", handleGPS); //  Route for fetching GPS coordinates
   server.begin();
 
-  //  --- NEW: GRAVITY CALIBRATION PHASE ---
+  //  --- GRAVITY CALIBRATION PHASE ---
   Serial.print("--- Starting Gravity Calibration (Do not move device) ---");
   for(int i = 0; i < 50; i++) {
     sensors_event_t event;
@@ -316,6 +345,9 @@ void setup(){
 
 void loop(){
 
+  //  --- Handle OTA Update First ---
+  ArduinoOTA.handle();
+
   server.handleClient();  //  Handle Requests
   checkMqttConnection();  //  Keep MQTT alive without blocking
 
@@ -334,7 +366,7 @@ void loop(){
   sensors_event_t event;
   accel.getEvent(&event);
 
-  //  --- NEW: DISPLACEMENT / FALL DETECTION ---
+  //  --- DISPLACEMENT / FALL DETECTION ---
   if(!isDeviceDisplaced) {
     float deltaX = fabs(event.acceleration.x - calibX);
     float deltaY = fabs(event.acceleration.y - calibY);
