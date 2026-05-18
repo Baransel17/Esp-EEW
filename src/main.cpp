@@ -4,18 +4,18 @@
 #include <Adafruit_ADXL345_U.h>
 #include <math.h>
 #include <WiFi.h>
-#include <WebServer.h>
 #include <PubSubClient.h>
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h> //  For ESP32 Hardware UART
 #include <WiFiManager.h>  //  For connect to WiFi easly
 #include <WiFiClientSecure.h> //  For cloud security (HiveMQ Cloud TLS/SSL)
-#include <ArduinoOTA.h> // For OTA (Over The Air)
+#include <ArduinoOTA.h> //  For OTA (Over The Air)
+#include <esp_task_wdt.h> // For Watchdog Timer
 
 //  --- USER CONFIGURATIONS --- 
-const char* mqtt_server = "******.cloud";  //  <-- UPDATE THIS
-const char* mqtt_user = "*****"; //  <-- UPDATE THIS
-const char* mqtt_pass = "*****"; //  <-- UPDATE THIS
+const char* mqtt_server = SECRET_MQTT_SERVER;
+const char* mqtt_user = SECRET_MQTT_USER;
+const char* mqtt_pass = SECRET_MQTT_PASS; 
 const char* mqtt_topic = "seismic_network/station_1/status";
 const int mqtt_port = 8883;
 
@@ -42,9 +42,11 @@ const int mqtt_port = 8883;
 #define LTA_WINDOW_SIZE 500 //  Long-Time Average Window (~10 seconds at 50Hz)
 #define STA_LTA_THRESHOLD 2.5 //  Trigger alarm if STA is 4x larger than LTA
 
+//  --- WATCHDOG CONFIGURATION ---
+#define WDT_TIMEOUT 5 //  5 seconds timeout for watchdog
+
 //  --- OBJECTS ---
 Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345); //  Create a sensor object with a unique ID(12345)
-WebServer server(80);
 
 // WiFiClient espClient;
 WiFiClientSecure espClient; //  Secure client for Cloud
@@ -65,6 +67,9 @@ unsigned long lastMqttReconnectAttempt = 0; //  For non-blocking reconnect
 //  Variables to store the latest valid GPS coordinates
 double currentLat = 0.0;
 double currentLng = 0.0;
+
+//  --- BREATHING LED VARIABLES ---
+unsigned long lastMqttHeartbeatTime = 0;
 
 // --- CALIBRATION & DISPLACEMENT VARIABLES ---
 float calibX = 0.0, calibY = 0.0, calibZ = 0.0;
@@ -88,120 +93,6 @@ String  createPayload(String statusMessage, float intensity = 0.0) {
 
   String payload = statusMessage + "|" + String(currentLat, 6) + "," + String(currentLng, 6) + "|" + String(intensityStr);
   return payload;
-}
-
-//  Web page
-String getHTML() {
-  //  R"rawliteral(...)rawliteral" is for optimized ESP32 memory
-  String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta name='viewport' content='width=device-width, initial-scale=1'>
-  <style>
-    body { font-family: sans-serif; text-align: center; margin-top: 20px; transition: background-color 0.5s; background-color: #f4f4f4;}
-    .container { background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 90%; max-width: 600px; margin: auto; }
-    h1 { font-size: 50px; margin: 10px 0; }
-    #statusText { font-weight: bold; }
-    #map { height: 350px; width: 100%; margin-top: 20px; border-radius: 5px; background-color: #e0e0e0; border: 1px solid #ccc; } 
-  </style>
-
-  <script>
-    let map;
-    let stationMarker;
-    let isMapInitialized = false;
-    
-    function initMap() {
-      const defaultPos = { lat: 0.0, lng: 0.0 };
-      map = new google.maps.Map(document.getElementById('map'), {
-        zoom: 2,
-        center: defaultPos,
-        mapTypeId: 'terrain'
-      });
-      stationMarker = new google.maps.Marker({
-        position: defaultPos,
-        map: map,
-        title: 'Station 1 (Active)'
-      });
-    }
-
-    setInterval(function() {
-      fetch('/status').then(response => response.text()).then(data => {
-        if (data == 'ALARM') {
-          // Earthquake state colors
-          document.body.style.backgroundColor = '#ffcccc';
-          document.getElementById('statusText').innerText = 'EARTHQUAKE!';
-          document.getElementById('statusText').style.color = 'red';
-          
-          // Animation: Start bouncing if not bouncing
-          if (stationMarker && stationMarker.getAnimation() == null) {
-            stationMarker.setAnimation(google.maps.Animation.BOUNCE);
-          }
-        } else {
-          // Safe state colors
-          document.body.style.backgroundColor = '#f4f4f4';
-          document.getElementById('statusText').innerText = 'SAFE';
-          document.getElementById('statusText').style.color = 'green';
-          
-          // Animation: Stop bouncing
-          if (stationMarker && stationMarker.getAnimation() != null) {
-            stationMarker.setAnimation(null);
-          }
-        }
-      });
-      // Real-Time GPS location
-      fetch('/gps').then(response => response.json()).then(data => {
-        if(data.lat !== 0.0 && data.lng !== 0.0) {
-          const newPos = { lat: data.lat, lng: data.lng };
-          stationMarker.setPosition(newPos);
-
-          if(!isMapInitialized) {
-            map.setCenter(newPos);
-            map.setZoom(14);
-            isMapInitialized = true;
-          }
-        }
-      }).catch(err => console.log('Waiting for GPS sync...'));
-
-    }, 1000);
-  </script>
-  <!-- Load Google Maps API (Replace YOUR_GOOGLE_MAPS_API_KEY later) -->      
-  <script async defer src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY&callback=initMap"></script>
-</head>
-<body>
-  <div class='container'>
-    <h2>SEISMIC NETWORK</h2>
-    <h3>Node: Station_1</h3>
-    <hr>
-    <h1 id='statusText'>SAFE</h1>
-    <p>System is monitoring P-Waves...</p>
-    <div id='map'>
-      <p style="padding-top: 150px; color: #666;">Loading Map...</p>
-    </div>
-  </div>
-</body>
-</html>
-  )rawliteral";
-  
-  return html;
-}
-
-void handleStatus(){
-  if(isAlarmActive) {
-    server.send(200, "text/plain", "ALARM");
-  } else {
-    server.send(200, "text/plain", "SAFE");
-  }
-}
-
-void handleGPS(){
-  String json = "{\"lat\": " + String(currentLat, 6) + ", \"lng\": " + String(currentLng, 6) + "}";
-  server.send(200, "application/json", json);
-}
-
-//  Webserver Functions
-void handleRoot(){
-  server.send(200, "text/html", getHTML());
 }
 
 //  --- Non-Blocking MQTT Reconnect Function ---
@@ -239,13 +130,14 @@ void setup(){
   //  Pin configurations
   pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_LED_GREEN, OUTPUT);
-  pinMode(PIN_LED_WHITE, OUTPUT);
+  ledcSetup(0, 5000, 8);
+  ledcAttachPin(PIN_LED_WHITE, 0);
   pinMode(PIN_BUZZER, OUTPUT);
   
   //  Default state: All off
   digitalWrite(PIN_LED_RED, LOW);
   digitalWrite(PIN_LED_GREEN, LOW);
-  digitalWrite(PIN_LED_WHITE, LOW);
+  ledcWrite(0, 0);
   digitalWrite(PIN_BUZZER, LOW);
 
   //  Initialize the sensor
@@ -264,6 +156,7 @@ void setup(){
   digitalWrite(PIN_LED_GREEN, HIGH);  //  Setup mode for WiFi connection
 
   WiFiManager wifiManager;
+  wifiManager.setConfigPortalTimeout(60); //  Timeout for the captive portal
 
   if(!wifiManager.autoConnect("Seismic_Node_Setup")) {
     Serial.println("Failed to connect and hit timeout. Restarting...");
@@ -277,10 +170,11 @@ void setup(){
 
   //  --- OTA CONFIGURATION ---
   ArduinoOTA.setHostname("Seismic_Station_1");  //  Hostname for the network
-  ArduinoOTA.setPassword("*****"); //  Password for OTA uploads
+  ArduinoOTA.setPassword(SECRET_OTA_PASS); //  Password for OTA uploads
 
   ArduinoOTA.onStart([]() {
-    Serial.println("[OTA] Update Started...");
+    Serial.println("[OTA] Update Started... Deactivating Watchdog for safety.");
+    esp_task_wdt_init(60, true);
     //  Turn off alarm during update
     digitalWrite(PIN_LED_RED, LOW);
     digitalWrite(PIN_BUZZER, LOW);
@@ -292,12 +186,8 @@ void setup(){
     Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
   });
   ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("[OTA] Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed.");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed.");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed.");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed.");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed.");
+    Serial.printf("[OTA] Error[%u]. Restarting system...", error);
+    ESP.restart(); // Restart device on OTA error
   });
 
   ArduinoOTA.begin();
@@ -306,12 +196,6 @@ void setup(){
   //  --- CLOUD MQTT SECURITY SETUP ---
   espClient.setInsecure();  //  Bypass SSL certificate validation for development
   mqttClient.setServer(mqtt_server, mqtt_port);
-
-  //  Webserver Routes
-  server.on("/", handleRoot); // Load the page
-  server.on("/status", handleStatus); // Check status
-  server.on("/gps", handleGPS); //  Route for fetching GPS coordinates
-  server.begin();
 
   //  --- GRAVITY CALIBRATION PHASE ---
   Serial.print("--- Starting Gravity Calibration (Do not move device) ---");
@@ -340,6 +224,12 @@ void setup(){
     digitalWrite(PIN_LED_GREEN, HIGH); delay(200);
     digitalWrite(PIN_LED_GREEN, LOW); delay(200);
   }
+
+  //  --- HARDWARE WATCHDOG INITIALIZATION ---
+  Serial.println("[WDT] Initializing Watchdog Timer...");
+  esp_task_wdt_init(WDT_TIMEOUT, true); //  Initialize WDT with timeout and panic mode enabled
+  esp_task_wdt_add(NULL); //  Add the current thread (main loop) to the watchdog
+
   Serial.println(">>> SYSTEM ARMED <<<");
 }
 
@@ -348,7 +238,6 @@ void loop(){
   //  --- Handle OTA Update First ---
   ArduinoOTA.handle();
 
-  server.handleClient();  //  Handle Requests
   checkMqttConnection();  //  Keep MQTT alive without blocking
 
   //  Read incoming GPS data without blocking the loop
@@ -366,39 +255,70 @@ void loop(){
   sensors_event_t event;
   accel.getEvent(&event);
 
-  //  --- DISPLACEMENT / FALL DETECTION ---
-  if(!isDeviceDisplaced) {
-    float deltaX = fabs(event.acceleration.x - calibX);
-    float deltaY = fabs(event.acceleration.y - calibY);
-    float deltaZ = fabs(event.acceleration.z - calibZ);
+  //  --- SMART DISPLACEMENT / FALL DETECTION & AUTO RECOVERY ---
+  float deltaX = fabs(event.acceleration.x - calibX);
+  float deltaY = fabs(event.acceleration.y - calibY);
+  float deltaZ = fabs(event.acceleration.z - calibZ);
 
-    //  If any axis deviates significantly from the initial 1g resting position
-    if(deltaX > DISPLACEMENT_THRESHOLD || deltaY > DISPLACEMENT_THRESHOLD || deltaZ > DISPLACEMENT_THRESHOLD) {
+  //  1. Condition: The device has moved, is shaking, or has fallen over
+  if(deltaX > DISPLACEMENT_THRESHOLD || deltaY > DISPLACEMENT_THRESHOLD || deltaZ > DISPLACEMENT_THRESHOLD){
+    if(!isDeviceDisplaced){
       displacementCounter++;
-      //  Require 20 consecutive readings (~400ms) to confirm it's a fall, not a seismic wave
-      if(displacementCounter > 20) {
+      //  Trigger alarm if it remains inverted for ~2 seconds
+      if(displacementCounter > 100){
         isDeviceDisplaced = true;
+        displacementCounter = 0;
         Serial.println(">>> FATAL: DEVICE DISPLACED OR FALLEN! <<<");
-        if(mqttClient.connected()) {
+        if(mqttClient.connected()){
           mqttClient.publish(mqtt_topic, createPayload("DEVICE_DISPLACED", 0.0).c_str());
         }
       }
-    } else {
-      displacementCounter = 0;  // Reset if it returns to normal position
+    }
+    else{
+      displacementCounter = 0;
+    }
+  }
+  else{
+    //  Status 2: The device has returned to its previous operating positions
+    if(isDeviceDisplaced){
+      displacementCounter++;
+      //  If it stays completely still in its original position for ~2 seconds it will recover
+      if(displacementCounter > 100){
+        isDeviceDisplaced = false;
+        displacementCounter = 0;
+        Serial.println("--- DEVICE HAS RETURNED TO ITS ORIGINAL LOCATION. ALARM IS BEING SILENCED ---");
+
+        //  We reset the reference point to prevent the seismic algorithm from suddenly jumping out of control
+        previousMagnitude = sqrt(pow(event.acceleration.x, 2) + pow(event.acceleration.y, 2) + pow(event.acceleration.z, 2));
+
+        digitalWrite(PIN_LED_RED, LOW);
+        digitalWrite(PIN_BUZZER, LOW);
+        
+        if(mqttClient.connected()) {
+          mqttClient.publish(mqtt_topic, createPayload("SAFE", 0.0).c_str());
+        }
+      }
+    }
+    else {
+      displacementCounter = 0; // Everything is normal
     }
   }
 
-  //  If the device has fallen, lock it in alarm state until hardware reset
-  if(isDeviceDisplaced) {
+  //  --- HARDWARE LOCK (Alarm Active Only) ---
+  if(isDeviceDisplaced){
     digitalWrite(PIN_LED_RED, HIGH);
 
-    //  Beep SOS or continuous warning
     if(millis() % 1000 < 500) {
       digitalWrite(PIN_BUZZER, HIGH);
     } else {
       digitalWrite(PIN_BUZZER, LOW);
     }
-    return; //  SKIP SEISMIC DETECTION, device is compromised!
+
+    //  --- KICK THE DOG IN LOCKOUT ---
+    esp_task_wdt_reset(); //  Keep feeding the watchdog while locked in fallen state
+
+    delay(20);
+    return;
   }
 
   //  Extract Axis Data
@@ -473,16 +393,24 @@ void loop(){
       currentMagnitude = sqrt(pow(event.acceleration.x, 2) + pow(event.acceleration.y, 2) + pow(event.acceleration.z, 2));
       previousMagnitude = currentMagnitude;
 
-      //  Flush Buffer for Buffer Contamination
-      staSum = 0;
-      ltaSum = 0;
+      //  --- PRIME BUFFERS WITH AMBIENT NOISE ---
+      //  Instead of resetting the buffers, we fill them with a low noise level. 
+      //  This way, the system doesn't go blank for 10 seconds; it starts listening immediately.
+      float ambientNoise = 0.015;
+
+      staSum = ambientNoise * STA_WINDOW_SIZE;
+      ltaSum = ambientNoise * LTA_WINDOW_SIZE;
+
+      for(int i = 0; i < STA_WINDOW_SIZE; i++) staBuffer[i] = ambientNoise;
+      for(int i = 0; i < LTA_WINDOW_SIZE; i++) ltaBuffer[i] = ambientNoise;
+
       staIndex = 0;
       ltaIndex = 0;
-      for(int i = 0; i < STA_WINDOW_SIZE; i++) staBuffer[i] = 0;
-      for(int i = 0; i < LTA_WINDOW_SIZE; i++) ltaBuffer[i] = 0;
-
-      sampleCount = 0;
-      Serial.println("--- MEMORY CLEARED. LISTENING FOR NEW EVENTS ---");
+      
+      //  We make the system appear fully loaded and ready instantly
+      sampleCount = LTA_WINDOW_SIZE;
+      firstReading = true;
+      Serial.println("--- MEMORY PRIMED. LISTENING FOR NEW EVENTS INSTANTLY ---");
     }
   }
 
@@ -494,14 +422,23 @@ void loop(){
     digitalWrite(PIN_LED_RED, LOW);
     digitalWrite(PIN_BUZZER, LOW);
 
-    //  --- HEARTBEAT LOGIC (Only when SAFE) ---
-    if(millis() - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
-      lastHeartbeatTime = millis();
-      digitalWrite(PIN_LED_WHITE, HIGH);
-      delay(50);
-      digitalWrite(PIN_LED_WHITE, LOW);
-      
-      //  Print GPS status to Serial Monitor for debugging
+    //  --- APPLE BREATHING LED & MQTT HEARTBEAT (Only when SAFE) ---
+    //  Create a breathing cycle of 4000ms
+    float phase = (millis() % 4000) / 4000.0 * 2.0 * PI;
+
+    //  Apple's e^sin(x) based natural breathing formula:
+    int pwmValue = (exp(sin(phase)) - 0.36787944) * 108.0;
+
+    //  Prevent it from going outside the boundaries and write to the LED
+    pwmValue = constrain(pwmValue, 0, 255);
+    ledcWrite(0, pwmValue);
+
+    //  Network HEARTBEAT (MQTT)
+    //  While the LED is constantly breathing, we only ping the network every 5 seconds.
+    if(millis() - lastMqttHeartbeatTime >= HEARTBEAT_INTERVAL){
+      lastMqttHeartbeatTime = millis();
+
+      //  Print GPS status to Serial Monitor
       Serial.print("... System Heartbeat ... [Lat: ");
       Serial.print(currentLat, 6);
       Serial.print(", Lng: ");
@@ -513,12 +450,16 @@ void loop(){
         mqttClient.publish(mqtt_topic, createPayload("HEARTBEAT", 0.0).c_str());
       }
     }
+    
   }
 
   //  UPDATE BASELINE (Only when safe, never during alarm)
   if(!isAlarmActive){
     previousMagnitude = currentMagnitude;
   }
+
+  //  --- RESET THE DOG ---
+  esp_task_wdt_reset();
 
   delay(20);
 }
